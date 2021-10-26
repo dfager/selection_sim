@@ -1,18 +1,86 @@
 ---
 title: "Simulation from Models with Selection"
-author: "David Fager"
-date: "10/21/2021"
-output: html_document
+author: 
+date: 
+output: pdf_document
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-Functions for simulation:
+## Functions for Simulation
 
+$\texttt{rdir.tree}$ produces a random realization of the ancestral selection graph as described in section 4.8 of Hein, Schierup, and Wiuf 2005. The inputs and outputs of this function are detailed below.
+
+Inputs:
+\begin{itemize}
+  \item $N$: the desired sample size. Should be an integer greater than 1.
+  \item $\sigma$: the scaled selection coefficient. Should be a nonnegative real number. Larger values correspond to a stronger selective advantage. Zero corresponds to a neutral model (no selective advantage).
+\end{itemize}
+
+Output: A structure containing the information necessary to construct a reticulating tree, as in the left side of Hein et al. Figure 4.21, including branch lengths. This structure is a matrix whose rows represent branching or coalescing events in the dual process. Rows are structured as follows:
+\begin{itemize}
+  \item The first entry in each row is the time since the event occurred, the "dual" time. Events are listed in the order they occurred. So the time of the first event is the time at which the last two lineages in the dual process coalesced into the lineage of the ultimate ancestor. Time zero represents the present, the start of the dual process.
+  \item The second entry in each row is either 1 or 0, where 1 indicates a coalescing event, and 0 represents a branching event.
+  \item If the event is a coalescing event, the 4th and 5th entries of the row are the numbers of the two lineages coalescing, and the 3rd entry is the number of the new lineage. (The process begins with $N$ lineages numbered 1 through $N$.)
+  \item If the event is a branching event, the 4th and 5th entries of the row are the numbers of the new lineages, the 4th being the continuing branch and the 5th being the incoming branch. The 3rd entry is the number of the lineage that branches.
+\end{itemize}
 ```{r}
-
+rdir.tree = function(N, sigma)
+{
+  time = 0
+  active_lines = 1:N
+  next_line = N + 1
+  tree = c()
+  
+  # We generate a new event with each iteration of this loop.
+  while(length(active_lines) > 1)
+  {
+    j = length(active_lines)
+    i.coal = j * (j - 1) / 2
+    i.branch = sigma * j / 2
+    
+    # Type of the event: coalescing or branching
+    coal = runif(1) < (i.coal / (i.coal + i.branch))
+    
+    wait.time = rexp(1, rate = i.coal + i.branch)
+    time = time + wait.time
+    event = c(time, coal)
+    
+    if(coal)
+    {
+      lines = sample(1:j, 2)  # sample 2 active lines without replacement
+      event = c(event, next_line, active_lines[lines])
+      active_lines = c(active_lines[-lines], next_line)
+      next_line = next_line + 1
+    }
+    else
+    {
+      line = sample(1:j, 1)  # sample 1 active line
+      event = c(event, active_lines[line], next_line, next_line + 1)
+      active_lines = c(active_lines[-line], next_line, next_line + 1)
+      next_line = next_line + 2
+    }
+    
+    tree = rbind(event, tree)  # add the event to the tree
+  }
+  return(tree)
+}
 ```
+
+Example of use:
+```{r}
+set.seed(43)
+rdir.tree(4, 1)
+```
+
+
+TODO: Add a function to print reticulating trees.
+
+TODO: Add a function to generate mutations along a reticulating tree and produce the final tree, in standard printable form, given the type of the ultimate ancestor.
+
+TODO: Modify function for case of more than 2 types.
+
 
 
