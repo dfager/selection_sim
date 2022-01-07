@@ -65,6 +65,8 @@ rdir.tree = function(N, sigma)
     
     tree = rbind(event, tree)  # add the event to the tree
   }
+  rownames(tree) = NULL
+  colnames(tree) = c("event time", "event type", "[,3]", "[,4]", "[,5]")
   return(tree)
 }
 ```
@@ -72,13 +74,218 @@ rdir.tree = function(N, sigma)
 Example of use:
 ```{r}
 set.seed(43)
-rdir.tree(4, 1)
+tree = rdir.tree(4, 1)
+tree
 ```
 
 
 TODO: Add a function to print reticulating trees.
 
-TODO: Add a function to generate mutations along a reticulating tree and produce the final tree, in standard printable form, given the type of the ultimate ancestor.
+TODO: Add documentation for function to generate mutations along a reticulating tree.
+Generates mutations according to Jukes Cantor model.
+```{r}
+rdir.mut = function(tree, u)
+{
+  mut_tree = c()
+  tree = rbind(tree, c(0, -1, 0, 0, 0))  # add a line for the present
+  time = tree[1, 1]  # time of the ultimate ancestor
+  active_lines = c(tree[1, 3])  # line number of the ultimate ancestor
+  for(event in 1:(length(tree[, 1])))
+  {
+    next_mut = NULL
+    while(time > tree[event, 1])
+    {
+      mut_tree = rbind(mut_tree, next_mut)
+      time = time - rexp(1, rate = u * length(active_lines))
+      next_mut = c(time, 2, sample(active_lines, 1), 0, 0)
+    }
+    
+    mut_tree = rbind(mut_tree, tree[event, ])
+    time = tree[event, 1]
+    
+    # now just need to update active_lines
+    if(tree[event, 2] == 0)
+    {
+      active_lines = c(active_lines[!(active_lines %in% tree[event, 4:5])],
+                       tree[event, 3])
+    }
+    else if(tree[event, 2] == 1)
+    {
+      active_lines = c(active_lines[active_lines != tree[event, 3]],
+                       tree[event, 4:5])
+    }
+    # no need to make an update at the sampling event
+  }
+  rownames(mut_tree) = NULL
+  return(mut_tree)
+}
+```
+
+Example of use:
+```{r}
+set.seed(2021)
+mut_tree = rdir.mut(tree, 1)
+mut_tree
+```
+
+
+TODO: Add documentation for function that produces the sample given the type of the ultimate ancestor and the graph with mutations.
+```{r}
+rdir.sample = function(mut_tree, ua)
+{
+  # active lineages and their types
+  active_lines = matrix(c(mut_tree[1, 3], ua), ncol = 2)
+  
+  for(event in 1:(length(mut_tree[, 1])))
+  {
+    if(mut_tree[event, 2] == 1)
+    {
+      index = which(active_lines[, 1] == mut_tree[event, 3])
+      active_lines = rbind(active_lines[-index, ],
+                           c(mut_tree[event, 4], active_lines[index, 2]),
+                           c(mut_tree[event, 5], active_lines[index, 2]))
+    }
+    else if(mut_tree[event, 2] == 2)
+    {
+      index = which(active_lines[, 1] == mut_tree[event, 3])
+      active_lines[index, 2] = !active_lines[index, 2]
+    }
+    else if(mut_tree[event, 2] == 0)
+    {
+      indices = which(active_lines[, 1] %in% mut_tree[event, 4:5])
+      # the type with advantage is 1
+      type = active_lines[indices[1], 2] | active_lines[indices[2], 2]
+      active_lines = rbind(active_lines[-indices, ],
+                           c(mut_tree[event, 3], type))
+    }
+  }
+  return(active_lines[, 2][order(active_lines[, 1])])
+}
+```
+
+Example of use:
+```{r}
+sample = rdir.sample(mut_tree, 1)
+sample
+```
+
+TODO: Add documentation for function that computes the likelihood of a sample given the graph, the mutation rate, and the type of the ultimate ancestor. Note that to get a complete likelihood, not given the common ancestor, we can integrate this function over the stationary distribution of the type of the common ancestor. This amounts to summing $p$ terms, where $p$ is the number of types.
+```{r}
+# under our simple model, we can compute the likelihood of having an even
+# (or odd) number of mutations along a particular lineage given the mutation
+# rate and the amount of time the lineage existed
+lineage.ll.helper = function(even, u, time)
+{
+  ll = (1 + exp(-2 * u * time)) / 2
+  if(even)
+  {
+    return(ll)
+  }
+  return(1 - ll)
+}
+
+rdir.llh.summand = function(y, z, m, tree, u, ua)
+{
+  tree = rbind(tree, c(0, -1, 0, 0, 0))
+  z = intToBits(z)[1:m]  # types of latent variables
+  z = c(y, z, ua)  # types of all variables
+  parent_types = rep(-1, length(z) - 1)
+  line_lengths = rep(0, length(z))
+  # fill those in
+  
+  time = tree[1, 1]
+  active_lines = c(length(z))
+  for(event in 1:length(tree[, 1]))
+  {
+    new_time = tree[event, 1]
+    line_lengths[active_lines] = line_lengths[active_lines] + (time - new_time)
+    time = new_time
+    if(tree[event, 2] == 1)
+    {
+      parent_types[tree[event, 4:5]] = z[tree[event, 3]]
+      active_lines = c(active_lines[active_lines != tree[event, 3]],
+                       tree[event, 4:5])
+    }
+    else if(tree[event, 2] == 0)
+    {
+      type = z[tree[event, 4]] | z[tree[event, 5]]
+      parent_types[tree[event, 3]] = type
+      active_lines = c(active_lines[!(active_lines %in% tree[event, 4:5])],
+                       tree[event, 3])
+    }
+  }
+  
+  helper = function(i)
+  {
+    even = (parent_types[i] == z[i])
+    return(lineage.ll.helper(even, u, line_lengths[i]))
+  }
+  return(prod(sapply(1:(length(z) - 1), helper)))
+}
+
+rdir.llh = function(y, tree, u, ua)
+{
+  m = tree[1, 3] - 1 - length(y)  # number of internal nodes to sum over
+  helper = function(z)
+  {
+    rdir.llh.summand(y, z, m, tree, u, ua)
+  }
+  return(sum(sapply(0:(2^m - 1), helper)))
+}
+```
+
+Example of use:
+```{r}
+rdir.llh(sample, tree, 1, 1)
+```
+
+
+TODO: Add documentation for function that validates likelihood calculation through simulation. Last argument is number of iterations.
+```{r}
+rdir.emp.llh = function(y, tree, u, ua, B)
+{
+  counter = 0
+  for(i in 1:B)
+  {
+    m_tree = rdir.mut(tree, u)
+    samp = rdir.sample(m_tree, ua)
+    if(identical(samp, y))
+    {
+      counter = counter + 1
+    }
+  }
+  return(counter / B)
+}
+```
+
+Example of use:
+```{r}
+set.seed(2022)
+rdir.emp.llh(sample, tree, 1, 1, 10^4)
+```
+Does this agree with the likelihood calculation? Which one runs faster?
+Yes, they agree! The first is much faster.
+
+Here's another example from start to finish. Change the seed to see different examples. Seed 20 leads to a complicated graph, and our method still works even in this more computationally intense scenario. In this case there are 17 internal nodes. Due to computational limitations, our function will not work if the number of internal nodes exceeds 31. For an example of this, leave the seed at 20, and set the value of sigma to 2. This limitation could probably be improved at the expense of having less readable code and spending a significant amount of time rewriting code.
+```{r}
+set.seed(20)
+N = 4
+sigma = 1
+u = 1
+ua = 1
+B = 10^4
+tree = rdir.tree(N, sigma)
+tree
+mut_tree = rdir.mut(tree, u)
+mut_tree
+sample = rdir.sample(mut_tree, ua)
+sample
+rdir.llh(sample, tree, u, ua)
+rdir.emp.llh(sample, tree, u, ua, B)
+```
+
+
+
 
 TODO: Modify function for case of more than 2 types.
 
